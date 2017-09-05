@@ -27,8 +27,10 @@ if (!argv.dontUseProxy) {
     })
 }
 var dohAddress = argv.dohAddress || 'https://dns.google.com/resolve';
+var listenAddress = argv.listenAddress || 'localhost';
+var listenPort = argv.listenPort || 53;
 
-Dnsd.createServer(dnsRequestHandler).listen('53', 'localhost', function() { console.log('DNS server running') });
+Dnsd.createServer(dnsRequestHandler).listen(listenPort, listenAddress, function() { console.log('DNS server running') });
 
 function dnsRequestHandler(req, res) {
     var question = res.question && req.question[0];
@@ -43,7 +45,7 @@ function dnsRequestHandler(req, res) {
     }, function (error, response, body) {
         if (response && response.statusCode === 200) {
             var dnsResponse = JSON.parse(body);
-            console.log('GoogleDNS: status={0} answers=[{1}]'
+            console.log('DOH: status={0} answers=[{1}]'
                 .format(
                     dnsResponse.Status, dnsResponse.Answer
                         ? dnsResponse.Answer.map(function (t) {
