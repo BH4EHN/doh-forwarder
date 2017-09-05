@@ -26,6 +26,7 @@ if (!argv.dontUseProxy) {
         }
     })
 }
+var dohAddress = argv.dohAddress || 'https://dns.google.com/resolve';
 
 Dnsd.createServer(dnsRequestHandler).listen('53', 'localhost', function() { console.log('DNS server running') });
 
@@ -33,7 +34,7 @@ function dnsRequestHandler(req, res) {
     var question = res.question && req.question[0];
     console.log('Request: name={0}, type={1}'.format(question.name, question.type));
     Request.get({
-        url: 'https://dns.google.com/resolve',
+        url: dohAddress,
         qs: {
             name: question.name,
             type: question.type,
