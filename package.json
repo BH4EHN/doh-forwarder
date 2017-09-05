@@ -1,0 +1,17 @@
+{
+  "name": "google-dns-over-https-forwarder",
+  "version": "1.0.0",
+  "description": "",
+  "main": "default.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dnsd": "^0.9.6",
+    "request": "^2.81.0",
+    "socks5-https-client": "^1.2.1",
+    "yargs": "^8.0.2"
+  }
+}
