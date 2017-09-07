@@ -1,9 +1,21 @@
-var Dnsd = require('dnsd');
-var DnsdConstants = require('dnsd/constants');
+var QueryString = require('querystring');
+var Named = require('named/lib/index');
 var Request = require('request');
 var Yargs = require('yargs');
 var Socks5HttpsAgent = require('socks5-https-client/lib/Agent');
 var Redis = require('ioredis');
+var Log4js = require('log4js');
+
+Log4js.configure({
+    appenders: {
+        out: { type: 'stdout' }
+    },
+    categories: {
+        default: { appenders: [ 'out' ], level: 'trace' }
+    }
+});
+var logger = Log4js.getLogger('general');
+var redisLogger = Log4js.getLogger('redis');
 
 if (!String.prototype.format) {
     String.prototype.format = function () {
@@ -16,9 +28,14 @@ if (!String.prototype.format) {
         });
     };
 }
+if (!String.prototype.endsWith) {
+    String.prototype.endsWith = function(suffix) {
+        return this.indexOf(suffix, this.length - suffix.length) !== -1;
+    }
+}
 
 var argv = Yargs.argv;
-var useProxy = !argv.dontUseProxy || true;
+var useProxy = !argv.dontUseProxy;
 var proxyHost = argv.proxyHost || '127.0.0.1';
 var proxyPort = argv.proxyPort || 1080;
 if (useProxy) {
@@ -36,54 +53,58 @@ var listenPort = argv.listenPort || 53;
 var useRedis = (!!argv.useRedis);
 var redisHost = argv.redisHost || '127.0.0.1';
 var redisPort = argv.redisPort || 6379;
-console.log('DohAddress: {0}'.format(dohAddress));
-console.log('listenAddress: {0}:{1}'.format(listenHost, listenPort));
-console.log('useProxy: {0}'.format(useProxy));
+logger.info('dohAddress: {0}'.format(dohAddress));
+logger.info('listenAddress: {0}:{1}'.format(listenHost, listenPort));
+logger.info('useProxy: {0}'.format(useProxy));
 if (useProxy) {
-    console.log('proxyAddress: {0}:{1}'.format(proxyHost, proxyPort));
+    logger.info('proxyAddress: {0}:{1}'.format(proxyHost, proxyPort));
 }
-console.log('useRedis: {0}'.format(useRedis));
+logger.info('useRedis: {0}'.format(useRedis));
 if (useRedis) {
-    console.log('redisAddress: {0}:{1}'.format(redisHost, redisPort));
+    logger.info('redisAddress: {0}:{1}'.format(redisHost, redisPort));
 }
 
 var redisClient = useRedis ? new Redis(redisPort, redisHost) : null;
-Dnsd.createServer(dnsRequestHandler).listen(listenPort, listenHost, function() { console.log('DNS server running') });
+var dnsServer = Named.createServer();
+dnsServer.listen(listenPort, listenHost, function() {});
 
-process.on('uncaughtException', function(err) {
-    console.error('UncaughtException: {0}'.format(err.message));
-});
+dnsServer.on('query', function(query) {
+    var requestName = query.name();
+    var requestType = query.type();
 
-function dnsRequestHandler(req, res) {
-    var question = res.question && req.question[0];
-    var requestName = question.name;
-    var requestType = question.type;
-    console.log('Request: name={0}, type={1}'.format(requestName, requestType));
+    logger.trace('request: name={0}, type={1}'.format(requestName, requestType));
 
     var redisKey = null;
     if (useRedis) {
-        redisKey = JSON.stringify({ name: question.name, type: question.type });
-        console.log('RedisKey: {0}'.format(redisKey));
+        redisKey = QueryString.stringify({ name: requestName, type: requestType });
+        logger.trace('RedisKey: "{0}"'.format(redisKey));
         redisClient.smembers(redisKey, function(err, result) {
             if (result !== undefined && result.length > 0) {
-                console.log('RedisKey: {0} HIT'.format(redisKey));
-                responseDns(res, result.map(function(t) { return JSON.parse(t) }));
+                redisLogger.trace('key "{0}" HIT'.format(redisKey));
+                responseDns(dnsServer, query, result.map(function(t) { return QueryString.parse(t) }));
             } else {
-                console.log('RedisKey: {0} MISS'.format(redisKey));
+                redisLogger.trace('key "{0}" MISS'.format(redisKey));
                 queryDns(dohAddress, requestName, requestType, function(answers) {
-                    responseDns(res, answers);
-                    redisClient.sadd(redisKey, answers.map(function (t) { return JSON.stringify(t) }), function(err, result) {
-                        redisClient.expire(redisKey, 600);
-                    });
+                    if (answers !== null) {
+                        responseDns(dnsServer, query, answers);
+                        if (answers.length > 0) {
+                            redisClient.sadd(redisKey, answers.map(function (t) { return QueryString.stringify(t) }), function(err, result) {
+                                redisLogger.trace('key "{0}" cached'.format(redisKey));
+                                redisClient.expire(redisKey, 600);
+                            });
+                        }
+                    }
                 });
             }
         });
     } else {
         queryDns(dohAddress, requestName, requestType, function(answers) {
-            responseDns(res, answers);
+            if (answers !== null) {
+                responseDns(dnsServer, query, answers);
+            }
         });
     }
-}
+});
 
 function queryDns(url, name, type, callback) {
     Request.get({
@@ -97,7 +118,7 @@ function queryDns(url, name, type, callback) {
             callback(null);
         } else {
             var dnsResponse = JSON.parse(body);
-            console.log('DOH: status={0} answers=[{1}]'
+            logger.trace('doh: status={0} answers=[{1}]'
                 .format(
                     dnsResponse.Status, dnsResponse.Answer
                         ? dnsResponse.Answer.map(function (t) {
@@ -120,10 +141,45 @@ function queryDns(url, name, type, callback) {
     });
 }
 
-function responseDns(res, answers) {
-    res.answer = res.answer.concat(
-        answers
-            .filter(function (t) { return [1, 5, 6].indexOf(t.type) !== -1 })
-            .map(function (t) { return {name: t.name, type: DnsdConstants.type_to_label(t.type), data: t.data, ttl: t.ttl} }));
-    res.end();
+var dnsTypes = {
+    1: 'A',
+    5: 'CNAME',
+    6: 'SOA',
+    15: 'MX',
+    16: 'TXT',
+    28: 'AAAA',
+    33: 'SRV'
+};
+
+function responseDns(server, query, answers) {
+    answers.forEach(function (a) {
+        var target = null;
+        switch (parseInt(a.type)) {
+            case 1: // A
+                target = new Named.ARecord(a.data);
+                break;
+            case 5: // CNAME
+                target = new Named.CNAMERecord(a.data);
+                break;
+            case 6: // SOA
+                break;
+            case 15: // MX
+                break;
+            case 16: // TXT
+                target = new Named.TXTRecord(a.data);
+                break;
+            case 28: // AAAA
+                target = new Named.AAAARecord(a.data);
+                break;
+            case 33: // SRV
+                break;
+        }
+        if (target !== null) {
+            if (a.name.endsWith('.')) {
+                a.name = a.name.slice(0, -1);
+            }
+            query.addAnswer(a.name, target, parseInt(a.ttl));
+        }
+    });
+    server.send(query);
 }

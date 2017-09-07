@@ -9,8 +9,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "dnsd": "^0.9.6",
     "ioredis": "^3.1.4",
+    "log4js": "^2.3.3",
+    "named": "git+https://github.com/yankeeyu/node-named.git",
     "request": "^2.81.0",
     "socks5-https-client": "^1.2.1",
     "yargs": "^8.0.2"
