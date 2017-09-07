@@ -42,6 +42,7 @@ var listenPort = argv.listenPort || 53;
 var useRedis = (!!argv.useRedis);
 var redisHost = argv.redisHost || '127.0.0.1';
 var redisPort = argv.redisPort || 6379;
+var redisExpire = argv.redisExpire || 1800;
 var logLevel =
     ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].indexOf(argv.logLevel) === -1
         ? 'info'
@@ -95,7 +96,7 @@ dnsServer.on('query', function(query) {
                         if (answers.length > 0) {
                             redisClient.sadd(redisKey, answers.map(function (t) { return QueryString.stringify(t) }), function(err, result) {
                                 redisLogger.trace('key "{0}" cached'.format(redisKey));
-                                redisClient.expire(redisKey, 600);
+                                redisClient.expire(redisKey, redisExpire);
                             });
                         }
                     }
