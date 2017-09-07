@@ -162,8 +162,23 @@ function responseDns(server, query, answers) {
                 target = new Named.CNAMERecord(a.data);
                 break;
             case 6: // SOA
+                var parts = a.data.split(' ');
+                target = new Named.SOARecord(parts[0], {
+                    admin: parts[1],
+                    serial: !!parts[2] ? parseInt(parts[2]) : undefined,
+                    refresh: !!parts[3] ? parseInt(parts[2]) : undefined,
+                    retry: !!parts[4] ? parseInt(parts[2]) : undefined,
+                    expire: !!parts[5] ? parseInt(parts[2]) : undefined,
+                    ttl: !!parts[6] ? parseInt(parts[2]) : undefined
+                });
                 break;
             case 15: // MX
+                var parts = a.data.split(' ');
+                if (parts.length === 2) {
+                    target = new Named.MXRecord(parts[1], { priority: parseInt(a[0]) });
+                } else if (parts.length === 1) {
+                    target = new Named.MXRecord(parts[0]);
+                }
                 break;
             case 16: // TXT
                 target = new Named.TXTRecord(a.data);
@@ -172,6 +187,7 @@ function responseDns(server, query, answers) {
                 target = new Named.AAAARecord(a.data);
                 break;
             case 33: // SRV
+                target = new Named.SRVRecord(a.data);
                 break;
         }
         if (target !== null) {
