@@ -6,17 +6,6 @@ var Socks5HttpsAgent = require('socks5-https-client/lib/Agent');
 var Redis = require('ioredis');
 var Log4js = require('log4js');
 
-Log4js.configure({
-    appenders: {
-        out: { type: 'stdout' }
-    },
-    categories: {
-        default: { appenders: [ 'out' ], level: 'trace' }
-    }
-});
-var logger = Log4js.getLogger('general');
-var redisLogger = Log4js.getLogger('redis');
-
 if (!String.prototype.format) {
     String.prototype.format = function () {
         var args = arguments;
@@ -53,6 +42,22 @@ var listenPort = argv.listenPort || 53;
 var useRedis = (!!argv.useRedis);
 var redisHost = argv.redisHost || '127.0.0.1';
 var redisPort = argv.redisPort || 6379;
+var logLevel =
+    ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].indexOf(argv.logLevel) === -1
+        ? 'info'
+        : argv.logLevel;
+
+Log4js.configure({
+    appenders: {
+        out: { type: 'stdout' }
+    },
+    categories: {
+        default: { appenders: [ 'out' ], level: logLevel }
+    }
+});
+var logger = Log4js.getLogger('general');
+var redisLogger = Log4js.getLogger('redis');
+
 logger.info('dohAddress: {0}'.format(dohAddress));
 logger.info('listenAddress: {0}:{1}'.format(listenHost, listenPort));
 logger.info('useProxy: {0}'.format(useProxy));
