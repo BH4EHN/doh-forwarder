@@ -4,6 +4,7 @@ var Request = require('request');
 var Yargs = require('yargs');
 var Socks5HttpsAgent = require('socks5-https-client/lib/Agent');
 var Redis = require('ioredis');
+var NodeCache = require( "node-cache" );
 var Log4js = require('log4js');
 
 if (!String.prototype.format) {
@@ -71,6 +72,7 @@ if (useRedis) {
 }
 
 var redisClient = useRedis ? new Redis(redisPort, redisHost) : null;
+var nodeCache = useRedis ? null : new NodeCache({ stdTTL: redisExpire });
 var dnsServer = Named.createServer();
 dnsServer.listen(listenPort, listenHost, function() {});
 
@@ -104,9 +106,28 @@ dnsServer.on('query', function(query) {
             }
         });
     } else {
-        queryDns(dohAddress, requestName, requestType, function(answers) {
+        /*queryDns(dohAddress, requestName, requestType, function (answers) {
             if (answers !== null) {
                 responseDns(dnsServer, query, answers);
+            }
+        });*/
+        var cacheKey = QueryString.stringify({ name: requestName, type: requestType });
+        logger.trace('CacheKey: {0}'.format(cacheKey));
+        nodeCache.get(cacheKey, function(err, value) {
+            if (value !== undefined) {
+                logger.trace('CacheKey {0} HIT'.format(cacheKey));
+                responseDns(dnsServer, query, value);
+                nodeCache.ttl(cacheKey, redisExpire);
+            } else {
+                logger.trace('CacheKey {0} MISS'.format(cacheKey));
+                queryDns(dohAddress, requestName, requestType, function(answers) {
+                    if (answers !== null) {
+                        responseDns(dnsServer, query, answers);
+                        if (answers.length > 0) {
+                            nodeCache.set(cacheKey, answers);
+                        }
+                    }
+                });
             }
         });
     }
@@ -165,6 +186,9 @@ function responseDns(server, query, answers) {
                 target = new Named.ARecord(a.data);
                 break;
             case 5: // CNAME
+                if (a.data.endsWith('.')) {
+                    a.data = a.data.slice(0, -1);
+                }
                 target = new Named.CNAMERecord(a.data);
                 break;
             case 6: // SOA
