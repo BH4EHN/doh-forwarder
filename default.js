@@ -1,33 +1,16 @@
-var QueryString = require('querystring');
-var Named = require('named/lib/index');
-var Request = require('request');
-var Yargs = require('yargs');
-var Socks5HttpsAgent = require('socks5-https-client/lib/Agent');
-var Redis = require('ioredis');
-var NodeCache = require( "node-cache" );
-var Log4js = require('log4js');
+const QueryString = require('querystring');
+const Named = require('named/lib/index');
+const Request = require('request');
+const Yargs = require('yargs');
+const Socks5HttpsAgent = require('socks5-https-client/lib/Agent');
+const Redis = require('ioredis');
+const NodeCache = require( "node-cache" );
+const Log4js = require('log4js');
 
-if (!String.prototype.format) {
-    String.prototype.format = function () {
-        var args = arguments;
-        return this.replace(/{(\d+)}/g, function (match, number) {
-            return typeof args[number] !== 'undefined'
-                ? args[number]
-                : match
-                ;
-        });
-    };
-}
-if (!String.prototype.endsWith) {
-    String.prototype.endsWith = function(suffix) {
-        return this.indexOf(suffix, this.length - suffix.length) !== -1;
-    }
-}
-
-var argv = Yargs.argv;
-var useProxy = !argv.dontUseProxy;
-var proxyHost = argv.proxyHost || '127.0.0.1';
-var proxyPort = argv.proxyPort || 1080;
+const argv = Yargs.argv;
+const useProxy = !argv.dontUseProxy;
+const proxyHost = argv.proxyHost || '127.0.0.1';
+const proxyPort = argv.proxyPort || 1080;
 if (useProxy) {
     Request.defaults({
         agentClass: Socks5HttpsAgent,
@@ -37,14 +20,14 @@ if (useProxy) {
         }
     })
 }
-var dohAddress = argv.dohAddress || 'https://dns.google.com/resolve';
-var listenHost = argv.listenHost || '127.0.0.1';
-var listenPort = argv.listenPort || 53;
-var useRedis = (!!argv.useRedis);
-var redisHost = argv.redisHost || '127.0.0.1';
-var redisPort = argv.redisPort || 6379;
-var redisExpire = argv.redisExpire || 1800;
-var logLevel =
+const dohAddress = argv.dohAddress || 'https://dns.google.com/resolve';
+const listenHost = argv.listenHost || '127.0.0.1';
+const listenPort = argv.listenPort || 53;
+const useRedis = (!!argv.useRedis);
+const redisHost = argv.redisHost || '127.0.0.1';
+const redisPort = argv.redisPort || 6379;
+const cacheExpire = argv.cacheExpire || 1800;
+const logLevel =
     ['trace', 'debug', 'info', 'warn', 'error', 'fatal'].indexOf(argv.logLevel) === -1
         ? 'info'
         : argv.logLevel;
@@ -57,118 +40,143 @@ Log4js.configure({
         default: { appenders: [ 'out' ], level: logLevel }
     }
 });
-var logger = Log4js.getLogger('general');
-var redisLogger = Log4js.getLogger('redis');
+const logger = Log4js.getLogger('general');
 
-logger.info('dohAddress: {0}'.format(dohAddress));
-logger.info('listenAddress: {0}:{1}'.format(listenHost, listenPort));
-logger.info('useProxy: {0}'.format(useProxy));
+logger.info(`dohAddress: ${dohAddress}`);
+logger.info(`listenAddress: ${listenHost}:${listenPort}`);
+logger.info(`useProxy: ${useProxy}`);
 if (useProxy) {
-    logger.info('proxyAddress: {0}:{1}'.format(proxyHost, proxyPort));
+    logger.info(`proxyAddress: ${proxyHost}:${proxyPort}`);
 }
-logger.info('useRedis: {0}'.format(useRedis));
+logger.info(`useRedis: ${useRedis}`);
 if (useRedis) {
-    logger.info('redisAddress: {0}:{1}'.format(redisHost, redisPort));
+    logger.info(`redisAddress: ${redisHost}:${redisPort}`);
 }
 
-var redisClient = useRedis ? new Redis(redisPort, redisHost) : null;
-var nodeCache = useRedis ? null : new NodeCache({ stdTTL: redisExpire });
-var dnsServer = Named.createServer();
-dnsServer.listen(listenPort, listenHost, function() {});
+const redisClient = useRedis ? new Redis(redisPort, redisHost) : null;
+const redisLogger = Log4js.getLogger('redis');
+const nodeCache = useRedis ? null : new NodeCache({ stdTTL: cacheExpire });
+const dnsServer = Named.createServer();
+dnsServer.listen(listenPort, listenHost, () => {
+    logger.info(`named server started and running on ${listenHost}:${listenPort}`);
+});
 
-dnsServer.on('query', function(query) {
-    var requestName = query.name();
-    var requestType = query.type();
-
-    logger.trace('request: name={0}, type={1}'.format(requestName, requestType));
-
-    var redisKey = null;
-    if (useRedis) {
-        redisKey = QueryString.stringify({ name: requestName, type: requestType });
-        logger.trace('RedisKey: "{0}"'.format(redisKey));
-        redisClient.smembers(redisKey, function(err, result) {
-            if (result !== undefined && result.length > 0) {
-                redisLogger.trace('key "{0}" HIT'.format(redisKey));
-                responseDns(dnsServer, query, result.map(function(t) { return QueryString.parse(t) }));
-            } else {
-                redisLogger.trace('key "{0}" MISS'.format(redisKey));
-                queryDns(dohAddress, requestName, requestType, function(answers) {
-                    if (answers !== null) {
-                        responseDns(dnsServer, query, answers);
-                        if (answers.length > 0) {
-                            redisClient.sadd(redisKey, answers.map(function (t) { return QueryString.stringify(t) }), function(err, result) {
-                                redisLogger.trace('key "{0}" cached'.format(redisKey));
-                                redisClient.expire(redisKey, redisExpire);
+const withRedis = (server, query) => {
+    let requestName = query.name();
+    let requestType = query.type();
+    let redisKey = QueryString.stringify({ name: requestName, type: requestType });
+    logger.trace(`Key: ${redisKey}`);
+    redisClient.smembers(redisKey, (err, result) => {
+        if (result !== undefined && result.length > 0) {
+            redisLogger.trace(`Key "${redisKey}" HIT`);
+            responseDns(server, query, result.map((t) => QueryString.parse(t)));
+        } else {
+            redisLogger.trace(`Key "${redisKey}" MISS`);
+            queryDns(dohAddress, requestName, requestType, (answers) => {
+                if (answers !== null) {
+                    responseDns(server, query, answers);
+                    if (answers.length > 0) {
+                        redisClient.del(redisKey, function() {
+                            redisLogger.trace(`Key "${redisKey}" deleted`);
+                            redisClient.sadd(redisKey, answers.map((t) => QueryString.stringify(t)), (err, result) => {
+                                redisLogger.trace(`Key "${redisKey}" cached`);
+                                redisClient.expire(redisKey, cacheExpire, () => {
+                                    redisLogger.trace(`Key "${redisKey} set expire"`);
+                                });
                             });
-                        }
+                        });
                     }
-                });
-            }
-        });
+                }
+            });
+        }
+    });
+};
+
+const withCache = (server, query) => {
+    let requestName = query.name();
+    let requestType = query.type();
+    let cacheKey = QueryString.stringify({ name: requestName, type: requestType });
+    logger.trace(`CacheKey: ${cacheKey}`);
+    nodeCache.get(cacheKey, function(err, value) {
+        if (value !== undefined) {
+            logger.trace(`CacheKey: ${cacheKey} HIT`);
+            responseDns(server, query, value);
+            nodeCache.ttl(cacheKey, cacheExpire);
+        } else {
+            logger.trace(`CacheKey: ${cacheKey} MISS`);
+            queryDns(dohAddress, requestName, requestType, function(answers) {
+                if (answers !== null) {
+                    responseDns(server, query, answers);
+                    if (answers.length > 0) {
+                        nodeCache.set(cacheKey, answers);
+                    }
+                }
+            });
+        }
+    });
+};
+
+const withNothing = (server, query) => {
+    let requestName = query.name();
+    let requestType = query.type();
+    queryDns(dohAddress, requestName, requestType, function (answers) {
+        if (answers !== null) {
+            responseDns(server, query, answers);
+        }
+    });
+};
+
+const processQuery = useRedis ? withRedis : withCache;
+
+dnsServer.on('query', (query) => {
+    let requestName = query.name();
+    let requestType = query.type();
+    logger.debug(`request: name=${requestName}, type=${requestType}`);
+    processQuery(dnsServer, query);
+});
+
+const queryMap = new Map();
+const queryDns = (url, name, type, callback) => {
+    let key = QueryString.stringify({ name: name, type: type });
+    if (queryMap.has(key)) {
+        queryMap.get(key).push(callback);
     } else {
-        /*queryDns(dohAddress, requestName, requestType, function (answers) {
-            if (answers !== null) {
-                responseDns(dnsServer, query, answers);
+        queryMap.set(key, [callback]);
+        Request.get({
+            url: url,
+            qs: {
+                name: name,
+                type: type
             }
-        });*/
-        var cacheKey = QueryString.stringify({ name: requestName, type: requestType });
-        logger.trace('CacheKey: {0}'.format(cacheKey));
-        nodeCache.get(cacheKey, function(err, value) {
-            if (value !== undefined) {
-                logger.trace('CacheKey {0} HIT'.format(cacheKey));
-                responseDns(dnsServer, query, value);
-                nodeCache.ttl(cacheKey, redisExpire);
+        }, function(err, response, body) {
+            let invokeAll = (c, r) => {
+                c.forEach((t) => t(r));
+            };
+            let callbacks = queryMap.get(key);
+            queryMap.delete(key);
+            if (err || !response || response.statusCode !== 200) {
+                invokeAll(callbacks, null);
             } else {
-                logger.trace('CacheKey {0} MISS'.format(cacheKey));
-                queryDns(dohAddress, requestName, requestType, function(answers) {
-                    if (answers !== null) {
-                        responseDns(dnsServer, query, answers);
-                        if (answers.length > 0) {
-                            nodeCache.set(cacheKey, answers);
-                        }
+                let dnsResponse = JSON.parse(body);
+                logger.trace(`doh: status=${dnsResponse.Status} answers=[${dnsResponse.Answer
+                    ? dnsResponse.Answer.map(t => `{name=${t.name},type=${t.type},ttl=${t.TTL},data=${t.data}}`).join(', ')
+                    : ''}]`);
+                if (dnsResponse.Status !== 0) {
+                    invokeAll(callbacks, null);
+                } else {
+                    if (!dnsResponse.Answer || dnsResponse.Answer.length === 0) {
+                        invokeAll(callbacks, []);
+                    } else {
+                        let answers = dnsResponse.Answer.map(function (t) { return {name: t.name, type: t.type, data: t.data, ttl: t.TTL}; });
+                        invokeAll(callbacks, answers);
                     }
-                });
+                }
             }
         });
     }
-});
+};
 
-function queryDns(url, name, type, callback) {
-    Request.get({
-        url: url,
-        qs: {
-            name: name,
-            type: type
-        }
-    }, function(err, response, body) {
-        if (err || !response || response.statusCode !== 200) {
-            callback(null);
-        } else {
-            var dnsResponse = JSON.parse(body);
-            logger.trace('doh: status={0} answers=[{1}]'
-                .format(
-                    dnsResponse.Status, dnsResponse.Answer
-                        ? dnsResponse.Answer.map(function (t) {
-                            return "name={0} type={1} ttl={2} data={3}".format(t.name, t.type, t.TTL, t.data)
-                        }).join(', ')
-                        : ''
-                )
-            );
-            if (dnsResponse.Status !== 0) {
-                callback(null);
-            } else {
-                if (!dnsResponse.Answer || dnsResponse.Answer.length === 0) {
-                    callback([]);
-                } else {
-                    var answers = dnsResponse.Answer.map(function (t) { return {name: t.name, type: t.type, data: t.data, ttl: t.TTL}; });
-                    callback(answers);
-                }
-            }
-        }
-    });
-}
-
-var dnsTypes = {
+const dnsTypes = {
     1: 'A',
     5: 'CNAME',
     6: 'SOA',
@@ -180,7 +188,7 @@ var dnsTypes = {
 
 function responseDns(server, query, answers) {
     answers.forEach(function (a) {
-        var target = null;
+        let target = null;
         switch (parseInt(a.type)) {
             case 1: // A
                 target = new Named.ARecord(a.data);
@@ -192,22 +200,22 @@ function responseDns(server, query, answers) {
                 target = new Named.CNAMERecord(a.data);
                 break;
             case 6: // SOA
-                var parts = a.data.split(' ');
-                target = new Named.SOARecord(parts[0], {
-                    admin: parts[1],
-                    serial: !!parts[2] ? parseInt(parts[2]) : undefined,
-                    refresh: !!parts[3] ? parseInt(parts[2]) : undefined,
-                    retry: !!parts[4] ? parseInt(parts[2]) : undefined,
-                    expire: !!parts[5] ? parseInt(parts[2]) : undefined,
-                    ttl: !!parts[6] ? parseInt(parts[2]) : undefined
+                let soaParts = a.data.split(' ');
+                target = new Named.SOARecord(soaParts[0], {
+                    admin: soaParts[1],
+                    serial: !!soaParts[2] ? parseInt(soaParts[2]) : undefined,
+                    refresh: !!soaParts[3] ? parseInt(soaParts[2]) : undefined,
+                    retry: !!soaParts[4] ? parseInt(soaParts[2]) : undefined,
+                    expire: !!soaParts[5] ? parseInt(soaParts[2]) : undefined,
+                    ttl: !!soaParts[6] ? parseInt(soaParts[2]) : undefined
                 });
                 break;
             case 15: // MX
-                var parts = a.data.split(' ');
-                if (parts.length === 2) {
-                    target = new Named.MXRecord(parts[1], { priority: parseInt(a[0]) });
-                } else if (parts.length === 1) {
-                    target = new Named.MXRecord(parts[0]);
+                let mxParts = a.data.split(' ');
+                if (mxParts.length === 2) {
+                    target = new Named.MXRecord(mxParts[1], { priority: parseInt(a[0]) });
+                } else if (mxParts.length === 1) {
+                    target = new Named.MXRecord(mxParts[0]);
                 }
                 break;
             case 16: // TXT
